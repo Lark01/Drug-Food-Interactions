@@ -1,13 +1,11 @@
-import gradio as gr
+import streamlit as st
 import joblib
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import FunctionTransformer
 import tensorflow as tf
+from PIL import Image
 
-# --- 1. DEFINE CUSTOM FUNCTIONS (MUST MATCH TRAINING) ---
-# The pipeline relies on functions defined in '__main__' during training.
-# You must paste the original code for these functions here.
 
 def log_numeric_columns(X):
     X = X.copy()
@@ -48,6 +46,7 @@ def map_drug_column(X):
         X['Drug'] = X['Drug'].map(drug_target_encoding)
     return X
 drug_mapper = FunctionTransformer(map_drug_column, validate=False)
+
 def create_features(data):
     data["calcium_drug"] = data["Calcium"] * data["Drug"]
     data["ca_protein_diff"] = data["Calcium"] - data["Protein"]
@@ -55,13 +54,19 @@ def create_features(data):
     data["Tyr_Drug_mul"] = data["Tyramine"] * data["Drug"]
     return data
 feature_creator = FunctionTransformer(create_features, validate=False)
-# --- 2. LOAD THE INTERACTION MODEL ---
-# Now we can safely load the pipeline
-interaction_model = joblib.load('svm_full_pipeline.joblib')
 
-# --- 3. LOAD YOUR IMAGE MODEL ---
-# Placeholder: Load your Keras/PyTorch model here
-image_model = tf.keras.models.load_model('food101_custom_FINAL_51acc.keras')
+@st.cache_resource
+def load_models():
+    pipeline = joblib.load('svm_full_pipeline.joblib')
+    img_model = tf.keras.models.load_model('food101_custom_FINAL_51acc.keras')
+    return pipeline, img_model
+
+try:
+    interaction_model, image_model = load_models()
+except Exception as e:
+    st.error(f"Error loading models. Make sure the .joblib and .keras files are in the same directory. Details: {e}")
+    st.stop()
+
 class_names = [
     "apple_pie", "baby_back_ribs", "baklava", "beef_carpaccio", "beef_tartare",
     "beet_salad", "beignets", "bibimbap", "bread_pudding", "breakfast_burrito",
@@ -83,19 +88,8 @@ class_names = [
     "spring_rolls", "steak", "strawberry_shortcake", "sushi", "tacos", "takoyaki",
     "tiramisu", "tuna_tartare", "waffles"
 ]
-def get_nutrition_from_image(image):
-    """
-    1. Preprocess image.
-    2. Predict food class using image_model.
-    3. Look up nutrition for that class.
-    """
-    image = tf.image.resize(image, (224, 224))
-    image = image / 255.0
-    image = tf.expand_dims(image, axis=0)
-    pred_idx = np.argmax(image_model.predict(image), axis=1)[0]
-    label = class_names[pred_idx]
 
-    nutrition = {
+nutrition_db = {
     "apple_pie": [200, 0.0, 120, 2.5, 35, 2, 3, 3, 15],
     "baby_back_ribs": [950, 0.5, 350, 0.5, 15, 5, 2, 25, 30],
     "baklava": [150, 0.2, 180, 3.0, 40, 8, 1, 6, 40],
@@ -197,38 +191,81 @@ def get_nutrition_from_image(image):
     "tiramisu": [150, 1.0, 150, 1.0, 30, 5, 0, 6, 80],
     "tuna_tartare": [500, 2.0, 400, 1.0, 2, 5, 2, 25, 20],
     "waffles": [500, 0.0, 150, 1.0, 25, 5, 0, 6, 100]
-    }
-    return nutrition[label]
+}
 
 nutrition_columns = ["Sodium", "Tyramine", "Potassium", "Fiber", "Sugar", "Vit K", "Vit C", "Protein", "Calcium"]
-def predict_interaction(image, drug_name):
-    if image is None:
-        return "Please upload an image."
+
+def get_nutrition_from_image(image_numpy):
+
+    image_tensor = tf.convert_to_tensor(image_numpy, dtype=tf.float32)
+
+    image_tensor = tf.image.resize(image_tensor, [224, 224])
+
+    image_tensor = tf.expand_dims(image_tensor, axis=0)
+    predictions = image_model.predict(image_tensor)
+    pred_idx = np.argmax(predictions, axis=1)[0]
+    label = class_names[pred_idx]
     
-    nutrition_data = get_nutrition_from_image(image)
-    
-    input_data = pd.DataFrame([nutrition_data], columns=nutrition_columns)
+    confidence = np.max(predictions)
+    print(f"Predicted: {label} with confidence {confidence:.2f}")
+
+    return nutrition_db[label], label
+def predict_interaction(image_numpy, drug_name):
+    nutrition_values, food_label = get_nutrition_from_image(image_numpy)
+    input_data = pd.DataFrame([nutrition_values], columns=nutrition_columns)
     input_data['Drug'] = drug_name 
+    prediction = interaction_model.predict(input_data)
     
     try:
-        prediction = interaction_model.predict(input_data)
         probability = interaction_model.predict_proba(input_data)
-        return f"Prediction: {prediction[0]}"
-    except Exception as e:
-        return f"Error in pipeline: {str(e)}"
+        prob_msg = f" (Confidence: {np.max(probability):.2f})"
+    except:
+        prob_msg = ""
+        
+    return prediction[0], prob_msg, food_label
 
+st.set_page_config(page_title="Drug-Food Interaction Checker", layout="centered")
 
-interface = gr.Interface(
-    fn=predict_interaction,
-    inputs=[
-        gr.Image(type="numpy", label="Upload Food Image"),
-        gr.Dropdown(choices=["Acenocoumarol", "Apixaban", "Ciprofloxacin", "Dabigatran", "Enalapril", "Insulin", "Isocarboxazid", "Levodopa", "Levothyroxine", "Lisinopril", "Paracetamol", "Phenelzine", "Rivaroxaban", "Rosuvastatin", "Simvastatin", "Spironolactone", "Tetracycline", "Tranylcypromine", "Warfarin"]
-, label="Select Drug") 
-    ],
-    outputs="text",
-    title="Drug-Food Interaction Checker",
-    description="Upload a food image and select a drug to check for safety."
-)
+st.title("Drug-Food Interaction Checker")
+st.markdown("Upload a food image and select a drug to check for potential interactions.")
+col1, col2 = st.columns(2)
 
-if __name__ == "__main__":
-    interface.launch()
+with col1:
+    uploaded_file = st.file_uploader("Upload Food Image", type=["jpg", "jpeg", "png"])
+    if uploaded_file is not None:
+        image = Image.open(uploaded_file).convert('RGB')
+        st.image(image, caption='Uploaded Image', use_container_width=True)
+
+with col2:
+    drug_list = [
+        "Acenocoumarol", "Apixaban", "Ciprofloxacin", "Dabigatran", "Enalapril", 
+        "Insulin", "Isocarboxazid", "Levodopa", "Levothyroxine", "Lisinopril", 
+        "Paracetamol", "Phenelzine", "Rivaroxaban", "Rosuvastatin", "Simvastatin", 
+        "Spironolactone", "Tetracycline", "Tranylcypromine", "Warfarin"
+    ]
+    selected_drug = st.selectbox("Select Drug", drug_list)
+    
+    predict_btn = st.button("Analyze Interaction", type="primary")
+
+if predict_btn:
+    if uploaded_file is None:
+        st.warning("Please upload an image first.")
+    else:
+        with st.spinner("Analyzing food and drug compatibility..."):
+            try:
+                image_np = np.array(image)
+                
+                prediction, prob_msg, food_label = predict_interaction(image_np, selected_drug)
+                
+                st.divider()
+                st.subheader("Analysis Results")
+                
+                st.info(f"**Detected Food:** {food_label.replace('_', ' ').title()}")
+                
+                st.write(f"**Interaction Prediction:** {prediction}")
+                if prob_msg:
+                    st.caption(prob_msg)
+                    
+            except Exception as e:
+                st.error(f"Error in pipeline: {str(e)}")
+
