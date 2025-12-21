@@ -99,13 +99,13 @@ You can containerize and run the application using Docker.
 - **Architecture**: Support Vector Machine (SVM) within a Scikit-learn Pipeline.
 - **File**: `svm_full_pipeline.joblib`
 - **Pipeline Steps**:
-  - **Preprocessing**: Log transformation ($\log(1+x)$) for numeric columns to reduce skew.
+  - **Preprocessing**: Log transformation (`log(1+x)`) for numeric columns to reduce skew.
   - **Encoding**: Target encoding for Drug names.
   - **Feature Engineering**: Creation of interaction terms between drug properties and food nutrients.
   - **Prediction**: Ternary classification of interaction risk:
-  0: None
-  1: Minor
-  2: Major
+    - 0: None
+    - 1: Minor
+    - 2: Major
 
 ## 📝 Future Improvements
 - **Data Validation**: Add tests for preprocessing transformers to guard against schema drift.
